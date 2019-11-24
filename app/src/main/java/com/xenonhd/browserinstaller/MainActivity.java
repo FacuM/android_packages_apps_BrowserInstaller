@@ -1,6 +1,5 @@
 package com.xenonhd.browserinstaller;
 
-import android.Manifest;
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -12,30 +11,25 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.StrictMode;
-import android.support.v4.app.ActivityCompat;
-import android.support.v7.app.AlertDialog;
-import android.support.v7.app.AppCompatActivity;
-import android.view.LayoutInflater;
+import android.util.Log;
 import android.view.View;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.Spinner;
 import android.widget.Toast;
 
-import java.io.File;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String TAG = "MainActivity";
+
     private static final int DONE = 1;
-    private static final int REQUEST_EXTERNAL_STORAGE = 1;
-    private static String[] PERMISSIONS_STORAGE = {
-            Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-    };
     private int[] icons = {R.mipmap.ic_chrome, R.mipmap.ic_firefox, R.mipmap.ic_opera, R.mipmap.ic_via};
     private String url = null;
     private String browser;
@@ -44,12 +38,18 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onReceive(Context context, Intent intent) {
+            DownloadManager downloadManager = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
 
-            Intent install = new Intent(Intent.ACTION_VIEW);
-            install.setDataAndType(Uri.fromFile(new File(Environment.getExternalStorageDirectory() + "/" + browser + ".apk")), "application/vnd.android.package-archive");
-            install.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivityForResult(install, DONE);
+            long downloadID = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
 
+            if (intent.getAction() != null && intent.getAction().equals(DownloadManager.ACTION_DOWNLOAD_COMPLETE)) {
+                Intent install = new Intent(Intent.ACTION_VIEW);
+                install.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                if (downloadManager != null) {
+                    install.setData(downloadManager.getUriForDownloadedFile(downloadID));
+                }
+                startActivityForResult(install, DONE);
+            }
         }
     };
 
@@ -57,15 +57,15 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        LayoutInflater inflater = getLayoutInflater();
-        final int permission = ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        StrictMode.VmPolicy.Builder strictBuilder = new StrictMode.VmPolicy.Builder();
-        StrictMode.setVmPolicy(strictBuilder.build());
 
-        builder.setView(inflater.inflate(R.layout.activity_main, null));
+        builder.setView(View.inflate(this, R.layout.activity_main, null));
 
         AlertDialog dialog = builder.create();
-        dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        Window dialogWindow = dialog.getWindow();
+        if (dialogWindow != null) {
+            dialogWindow.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        }
+
         dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(DialogInterface dialogInterface) {
@@ -78,27 +78,35 @@ public class MainActivity extends AppCompatActivity {
         final Spinner spinner = dialog.findViewById(R.id.spinner);
         final String[] browsers = getResources().getStringArray(R.array.browsers_array);
         SpinnerAdapter spinnerAdapter = new SpinnerAdapter(this, icons, browsers);
-        spinner.setAdapter(spinnerAdapter);
+        if (spinner != null) {
+            spinner.setAdapter(spinnerAdapter);
+        }
 
-        button.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                if (permission != PackageManager.PERMISSION_GRANTED) {
-                    ActivityCompat.requestPermissions(
-                            MainActivity.this,
-                            PERMISSIONS_STORAGE,
-                            REQUEST_EXTERNAL_STORAGE
-                    );
-                } else {
+        if (button != null) {
+            button.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
                     ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-                    NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
-                    if (activeNetworkInfo != null && activeNetworkInfo.isConnected())
-                        performInstall(icons[(int) spinner.getSelectedItemId()]);
-                    else
-                        Toast.makeText(MainActivity.this, R.string.not_connected, Toast.LENGTH_LONG).show();
+                    NetworkCapabilities networkCapabilities;
+                    if (connectivityManager != null) {
+                        networkCapabilities = connectivityManager.getNetworkCapabilities(connectivityManager.getActiveNetwork());
+                        if (networkCapabilities != null) {
+                            if (networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)  ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)  ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)      ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH))
+                            {
+                                if (spinner != null) {
+                                    performInstall(icons[(int) spinner.getSelectedItemId()]);
+                                }
+                            } else {
+                                Toast.makeText(MainActivity.this, R.string.not_connected, Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    }
                 }
-            }
-        });
+            });
+        }
 
     }
 
@@ -154,13 +162,16 @@ public class MainActivity extends AppCompatActivity {
         if (isPlayStoreThere() && appPackageName != null) {
             startActivityForResult(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + appPackageName)), DONE);
         } else {
+            Log.d(TAG, "performInstall: starting download...");
             DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
             req.setTitle(getString(R.string.app_name));
             req.setDescription(getString(R.string.notification).replace("$", browser));
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir("", browser + ".apk");
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, appPackageName + ".apk");
             DownloadManager mgr = (DownloadManager) this.getSystemService(Context.DOWNLOAD_SERVICE);
-            mgr.enqueue(req);
+            if (mgr != null) {
+                mgr.enqueue(req);
+            }
 
             IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
             registerReceiver(downloadReceiver, filter);
